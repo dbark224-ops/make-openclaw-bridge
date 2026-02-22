@@ -1,12 +1,13 @@
 {
-"name": "make-openclaw-bridge",
-"version": "1.0.0",
-"type": "module",
-"main": "server.js",
-"scripts": {
-"start": "node server.js"
-},
-"dependencies": {
-"express": "^4.19.2"
-}
+  "name": "make-openclaw-bridge",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-fetch": "^2.6.1" // <--- This is the new line you need to add
+  }
 }
