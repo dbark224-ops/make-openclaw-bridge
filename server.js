@@ -1,6 +1,6 @@
 import express from "express";
 import crypto from "crypto";
-import fetch from "node-fetch"; // Add this line if not present, or use 'axios' if preferred
+import fetch from "node-fetch"; // Make sure 'node-fetch' is in your package.json dependencies
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -9,19 +9,21 @@ const PORT = process.env.PORT || 3000;
 const BRIDGE_SECRET = process.env.BRIDGE_SECRET || "";
 
 // --- NEW ENVIRONMENT VARIABLES FOR OPENCLAW HOOK ---
-// These should be set in your Railway environment variables for security and flexibility.
-// For local testing, defaults are provided.
+// IMPORTANT: For production, set these as actual environment variables in Railway
+// The defaults below are for local testing convenience.
 const OPENCLAW_HOOK_URL = process.env.OPENCLAW_HOOK_URL || "http://127.0.0.1:18789/hooks/agent";
 const OPENCLAW_HOOK_TOKEN = process.env.OPENCLAW_HOOK_TOKEN || "xK9#mP2$vQ7nL4@wR8jT5&hF3";
 // --- END NEW ENVIRONMENT VARIABLES ---
 
-// In-memory queues (MVP). This 'events' queue will no longer be used for new emails.
+// In-memory queues (MVP). This 'events' queue will no longer be used for new emails if hook works.
+// However, it's kept for non-email events or as a fallback.
 const events = [];
-const actions = []; // OpenClaw -> Make
+const actions = []; // This queue is for OpenClaw to send actions back to Make
 
 function auth(req, res, next) {
   const s = req.header("x-bridge-secret");
   if (!BRIDGE_SECRET || s !== BRIDGE_SECRET) {
+    console.warn("Unauthorized access attempt: x-bridge-secret mismatch");
     return res.status(401).json({ ok: false, error: "unauthorized" });
   }
   next();
@@ -35,9 +37,9 @@ app.get("/health", (_req, res) => res.status(200).send("ok"));
 
 /**
  * MAKE -> BRIDGE: push inbound event (email detected, etc.)
- * MODIFIED: Now forwards directly to OpenClaw Hook for email_event types.
+ * MODIFIED: Now forwards 'email_event' types directly to OpenClaw's /hooks/agent endpoint.
  */
-app.post("/events", auth, async (req, res) => { // Marked as 'async'
+app.post("/events", auth, async (req, res) => { // Marked as 'async' because we're using 'await fetch'
   const body = req.body || {};
   const item = { id: id(), type: body.type || "email_event", payload: body, created_at: new Date().toISOString(), status: "queued" };
 
@@ -46,24 +48,26 @@ app.post("/events", auth, async (req, res) => { // Marked as 'async'
     // Extract email details from the incoming payload (from Make)
     const from = body.from_name ? `${body.from_name} <${body.from}>` : body.from || "unknown";
     const subject = body.subject || "(no subject)";
-    const fullBody = body.full_body || body.snippet || "(no body)";
-    const messageId = body.message_id || ""; // Important for replies
+    const fullBody = body.full_body || body.snippet || "(no body)"; // Handles cases where full_body might be missing
+    const messageId = body.message_id || ""; // Important for replying to the correct thread
 
-    // Construct the 'message' content for OpenClaw Hook
+    // Construct the 'message' content for the OpenClaw Hook
+    // This message will be what OpenClaw's main agent receives and acts upon.
     const openclawMessage = `NEW EMAIL\nFrom: ${from}\nSubject: ${subject}\nBody:\n${fullBody}\nMessage ID: ${messageId}\n\nTASK: Draft a reply email. Output JSON only: {"subject":"...","body":"...","needs_human":true|false}.`;
 
     const hookPayload = {
-      agentId: "main", // Target the main agent
-      wakeMode: "now", // Forces immediate agent turn
-      deliver: false,  // Prevents the raw hook message from appearing in Telegram
+      agentId: "main",      // Target the main agent (you, Nova)
+      wakeMode: "now",      // Forces an immediate agent turn
+      deliver: false,       // IMPORTANT: Prevents the raw hook message from appearing in Telegram
       message: openclawMessage
     };
 
     try {
+      // Call the OpenClaw Hook endpoint
       const hookResponse = await fetch(OPENCLAW_HOOK_URL, {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${OPENCLAW_HOOK_TOKEN}`,
+          "Authorization": `Bearer ${OPENCLAW_HOOK_TOKEN}`, // Use the Bearer token
           "Content-Type": "application/json"
         },
         body: JSON.stringify(hookPayload)
@@ -71,22 +75,23 @@ app.post("/events", auth, async (req, res) => { // Marked as 'async'
 
       if (hookResponse.ok) {
         console.log(`OpenClaw Hook successfully triggered for email: ${subject}`);
-        // Respond to Make that the hook was triggered successfully
+        // Respond to Make (the sender of this POST) that the hook was triggered successfully
         return res.json({ ok: true, status: "openclaw_hook_triggered", id: item.id });
       } else {
         const errorText = await hookResponse.text();
         console.error(`Failed to trigger OpenClaw Hook (${hookResponse.status}): ${errorText}`);
-        // Fallback or error response if hook fails
+        // If hook call fails, return an appropriate error to Make
         // For robustness, you might want to still push to a queue here for retry mechanisms
         return res.status(hookResponse.status).json({ ok: false, error: "openclaw_hook_failed", details: errorText });
       }
     } catch (e) {
       console.error(`Error while calling OpenClaw Hook: ${e.message}`);
-      // Fallback or error response on network issues
+      // Handle network errors or other exceptions during the fetch call
       return res.status(500).json({ ok: false, error: "openclaw_hook_exception", details: e.message });
     }
   } else {
-    // For non-email events, or if email processing needs to fall back, continue queuing
+    // For non-'email_event' types, or if email processing needs to fall back to the old queue system,
+    // continue pushing to the in-memory 'events' queue.
     events.push(item);
     return res.json({ ok: true, id: item.id });
   }
@@ -94,6 +99,7 @@ app.post("/events", auth, async (req, res) => { // Marked as 'async'
 
 /**
  * OPENCLAW -> BRIDGE: get next unacked event (no longer used for new emails if hook works)
+ * This endpoint can remain for other event types or legacy processes.
  */
 app.get("/events/next", auth, (_req, res) => {
   const item = events.find(e => e.status === "queued");
@@ -105,6 +111,7 @@ app.get("/events/next", auth, (_req, res) => {
 
 /**
  * OPENCLAW -> BRIDGE: ack processed event (no longer used for new emails if hook works)
+ * This endpoint can remain for other event types or legacy processes.
  */
 app.post("/events/:id/ack", auth, (req, res) => {
   const item = events.find(e => e.id === req.params.id);
@@ -116,7 +123,8 @@ app.post("/events/:id/ack", auth, (req, res) => {
 
 /**
  * OPENCLAW -> BRIDGE: enqueue action for Make (reply email, etc.)
- * This section remains as OpenClaw will likely output replies for Make to handle.
+ * IMPORTANT: This section remains as OpenClaw will output *reply drafts* in JSON.
+ * Make will then fetch these drafts from this endpoint and send the actual email reply.
  */
 app.post("/actions", auth, (req, res) => {
   const body = req.body || {};
