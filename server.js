@@ -12,11 +12,10 @@ const BRIDGE_SECRET = process.env.BRIDGE_SECRET || "";
 // IMPORTANT: For production, set these as actual environment variables in Railway
 // The defaults below are for local testing convenience.
 const OPENCLAW_HOOK_URL = process.env.OPENCLAW_HOOK_URL || "http://127.0.0.1:18789/hooks/agent";
-const OPENCLAW_HOOK_TOKEN = process.env.OPENCLAW_HOOK_TOKEN || "xK9#mP2$vQ7nL4@wR8jT5&hF3";
+const OPENCLAW_HOOK_TOKEN = process.env.OPENCLAW_HOOK_TOKEN || "testtoken"; // Using 'testtoken' as our verified token
 // --- END NEW ENVIRONMENT VARIABLES ---
 
 // In-memory queues (MVP). This 'events' queue will no longer be used for new emails if hook works.
-// However, it's kept for non-email events or as a fallback.
 const events = [];
 const actions = []; // This queue is for OpenClaw to send actions back to Make
 
@@ -48,18 +47,29 @@ app.post("/events", auth, async (req, res) => { // Marked as 'async' because we'
     // Extract email details from the incoming payload (from Make)
     const from = body.from_name ? `${body.from_name} <${body.from}>` : body.from || "unknown";
     const subject = body.subject || "(no subject)";
-    const fullBody = body.full_body || body.snippet || "(no body)"; // Handles cases where full_body might be missing
-    const messageId = body.message_id || ""; // Important for replying to the correct thread
+    const fullBody = body.full_body || body.snippet || "(no body)";
+    const rawMessageId = body.raw_message_id || ""; // The standard RFC Message-ID header (for reference)
+    const gmailApiMessageId = body.gmail_api_message_id || ""; // The crucial Gmail API message ID for replies
+
+    // Construct the structured payload for OpenClaw
+    const openclawPayload = {
+      from: from,
+      subject: subject,
+      body: fullBody,
+      rawMessageId: rawMessageId,
+      gmailApiMessageId: gmailApiMessageId // This is the crucial ID for replies
+    };
 
     // Construct the 'message' content for the OpenClaw Hook
     // This message will be what OpenClaw's main agent receives and acts upon.
-    const openclawMessage = `NEW EMAIL\nFrom: ${from}\nSubject: ${subject}\nBody:\n${fullBody}\nMessage ID: ${messageId}\n\nTASK: Draft a reply email. Output JSON only: {"subject":"...","body":"...","needs_human":true|false}.`;
+    const openclawMessage = `NEW EMAIL EVENT\nFrom: ${from}\nSubject: ${subject}\nGmail API Message ID: ${gmailApiMessageId}\n\nTASK: Draft a reply email based on the following content. Output JSON only: {"subject":"...","body":"...","needs_human":true|false}.`;
 
     const hookPayload = {
       agentId: "main",      // Target the main agent (you, Nova)
       wakeMode: "now",      // Forces an immediate agent turn
       deliver: false,       // IMPORTANT: Prevents the raw hook message from appearing in Telegram
-      message: openclawMessage
+      payload: openclawPayload, // Pass the structured payload to the agent
+      message: openclawMessage // Still include a human-readable message for context
     };
 
     try {
@@ -81,7 +91,6 @@ app.post("/events", auth, async (req, res) => { // Marked as 'async' because we'
         const errorText = await hookResponse.text();
         console.error(`Failed to trigger OpenClaw Hook (${hookResponse.status}): ${errorText}`);
         // If hook call fails, return an appropriate error to Make
-        // For robustness, you might want to still push to a queue here for retry mechanisms
         return res.status(hookResponse.status).json({ ok: false, error: "openclaw_hook_failed", details: errorText });
       }
     } catch (e) {
