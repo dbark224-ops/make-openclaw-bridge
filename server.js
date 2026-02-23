@@ -51,6 +51,14 @@ app.post("/events", auth, async (req, res) => { // Marked as 'async'
     const rawMessageId = body.raw_message_id || ""; // The standard RFC Message-ID header (for reference)
     const gmailApiMessageId = body.gmail_api_message_id || ""; // The crucial Gmail API message ID for replies
 
+    // --- ADD THE FOLLOWING LINES ---
+    // Filter out outgoing emails from hello@workflowautomation.au to prevent feedback loop
+    if (body.from && body.from.includes("hello@workflowautomation.au")) {
+    console.log("Filtered out outgoing email from hello@workflowautomation.au to prevent feedback loop.");
+    return res.status(200).json({ ok: true, message: "Filtered outgoing email" });
+    }
+    // --- END ADDED LINES ---
+
     // Construct the 'message' content for the OpenClaw Hook payload
     const openclawMessage = `NEW EMAIL\nFrom: ${from}\nSubject: ${subject}\nGmail API Message ID: ${gmailApiMessageId}\nBody:\n${fullBody}\n\nTASK: Draft a reply email based on this content. If you need clarification, ask David one specific question. Use gog cli send email --to --subject --body --reply-to-message-id. Confirm send to chat with brief message.`;
 
