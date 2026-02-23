@@ -8,14 +8,14 @@ app.use(express.json({ limit: "1mb" }));
 const PORT = process.env.PORT || 3000;
 const BRIDGE_SECRET = process.env.BRIDGE_SECRET || "";
 
-// --- NEW ENVIRONMENT VARIABLES FOR OPENCLAW HOOK ---
+// --- OPENCLAW HOOK CONFIGURATION ---
 // IMPORTANT: For production, set these as actual environment variables in Railway
 // The defaults below are for local testing convenience.
-const OPENCLAW_HOOK_URL = process.env.OPENCLAW_HOOK_URL || "http://127.0.0.1:18789/hooks/agent";
+const OPENCLAW_HOOK_URL = process.env.OPENCLAW_HOOK_URL || "http://127.00.1:18789/hooks/wake"; // MODIFIED: Target /hooks/wake
 const OPENCLAW_HOOK_TOKEN = process.env.OPENCLAW_HOOK_TOKEN || "testtoken"; // Using 'testtoken' as our verified token
-// --- END NEW ENVIRONMENT VARIABLES ---
+// --- END OPENCLAW HOOK CONFIGURATION ---
 
-// In-memory queues (MVP). This 'events' queue will no longer be used for new emails if hook works.
+// In-memory queues (MVP). 'events' queue will no longer be used for new emails if hook works.
 const events = [];
 const actions = []; // This queue is for OpenClaw to send actions back to Make
 
@@ -36,9 +36,9 @@ app.get("/health", (_req, res) => res.status(200).send("ok"));
 
 /**
  * MAKE -> BRIDGE: push inbound event (email detected, etc.)
- * MODIFIED: Now forwards 'email_event' types directly to OpenClaw's /hooks/agent endpoint.
+ * MODIFIED: Now forwards 'email_event' types directly to OpenClaw's /hooks/wake endpoint.
  */
-app.post("/events", auth, async (req, res) => { // Marked as 'async' because we're using 'await fetch'
+app.post("/events", auth, async (req, res) => { // Marked as 'async'
   const body = req.body || {};
   const item = { id: id(), type: body.type || "email_event", payload: body, created_at: new Date().toISOString(), status: "queued" };
 
@@ -51,29 +51,17 @@ app.post("/events", auth, async (req, res) => { // Marked as 'async' because we'
     const rawMessageId = body.raw_message_id || ""; // The standard RFC Message-ID header (for reference)
     const gmailApiMessageId = body.gmail_api_message_id || ""; // The crucial Gmail API message ID for replies
 
-    // Construct the structured payload for OpenClaw
-    const openclawPayload = {
-      from: from,
-      subject: subject,
-      body: fullBody,
-      rawMessageId: rawMessageId,
-      gmailApiMessageId: gmailApiMessageId // This is the crucial ID for replies
-    };
-
-    // Construct the 'message' content for the OpenClaw Hook
+    // Construct the 'text' content for the OpenClaw Hook payload (for /hooks/wake)
     // This message will be what OpenClaw's main agent receives and acts upon.
-    const openclawMessage = `NEW EMAIL EVENT\nFrom: ${from}\nSubject: ${subject}\nGmail API Message ID: ${gmailApiMessageId}\n\nTASK: Draft a reply email based on the following content. Output JSON only: {"subject":"...","body":"...","needs_human":true|false}.`;
+    const hookTextMessage = `NEW EMAIL\nFrom: ${from}\nSubject: ${subject}\nGmail API Message ID: ${gmailApiMessageId}\nBody:\n${fullBody}\n\nTASK: Draft a reply email based on this content. If you need clarification, ask David one specific question. Use gog cli send email --to --subject --body --reply-to-message-id. Confirm send to chat with brief message.`;
 
     const hookPayload = {
-      agentId: "main",      // Target the main agent (you, Nova)
-      wakeMode: "now",      // Forces an immediate agent turn
-      deliver: false,       // IMPORTANT: Prevents the raw hook message from appearing in Telegram
-      payload: openclawPayload, // Pass the structured payload to the agent
-      message: openclawMessage // Still include a human-readable message for context
+      mode: "now", // For /hooks/wake, this ensures immediate processing
+      text: hookTextMessage // The message content for the agent
     };
 
     try {
-      // Call the OpenClaw Hook endpoint
+      // Call the OpenClaw Hook endpoint (now /hooks/wake)
       const hookResponse = await fetch(OPENCLAW_HOOK_URL, {
         method: "POST",
         headers: {
@@ -84,19 +72,19 @@ app.post("/events", auth, async (req, res) => { // Marked as 'async' because we'
       });
 
       if (hookResponse.ok) {
-        console.log(`OpenClaw Hook successfully triggered for email: ${subject}`);
+        console.log(`OpenClaw Hook (/wake) successfully triggered for email: ${subject}`);
         // Respond to Make (the sender of this POST) that the hook was triggered successfully
-        return res.json({ ok: true, status: "openclaw_hook_triggered", id: item.id });
+        return res.json({ ok: true, status: "openclaw_hook_wake_triggered", id: item.id });
       } else {
         const errorText = await hookResponse.text();
-        console.error(`Failed to trigger OpenClaw Hook (${hookResponse.status}): ${errorText}`);
+        console.error(`Failed to trigger OpenClaw Hook (/wake) (${hookResponse.status}): ${errorText}`);
         // If hook call fails, return an appropriate error to Make
-        return res.status(hookResponse.status).json({ ok: false, error: "openclaw_hook_failed", details: errorText });
+        return res.status(hookResponse.status).json({ ok: false, error: "openclaw_hook_wake_failed", details: errorText });
       }
     } catch (e) {
-      console.error(`Error while calling OpenClaw Hook: ${e.message}`);
+      console.error(`Error while calling OpenClaw Hook (/wake): ${e.message}`);
       // Handle network errors or other exceptions during the fetch call
-      return res.status(500).json({ ok: false, error: "openclaw_hook_exception", details: e.message });
+      return res.status(500).json({ ok: false, error: "openclaw_hook_wake_exception", details: e.message });
     }
   } else {
     // For non-'email_event' types, or if email processing needs to fall back to the old queue system,
