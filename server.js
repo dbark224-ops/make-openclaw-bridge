@@ -59,7 +59,7 @@ app.post("/events", auth, async (req, res) => { // Marked as 'async'
       wakeMode: "now",      // Forces an immediate agent turn
       deliver: true,        // MODIFIED: Deliver the message directly to the chat
       channel: "telegram",  // MODIFIED: Specify the target channel
-      to: "-1003765446514", // MODIFIED: Specify the target chat ID (this chat)
+      to: "-1003765446514:topic:1", // MODIFIED: Specify the target chat ID (this chat)
       message: openclawMessage
     };
 
